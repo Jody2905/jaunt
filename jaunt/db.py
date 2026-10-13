@@ -5,10 +5,19 @@ up front), so two travellers can't both read "1 room left" and both book it.
 On PostgreSQL the same job is done by locking the inventory row (SELECT ... FOR UPDATE).
 """
 
+import os
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from .models import Base
+
+
+def database_url(arg=None):
+    """The database to use: an argument, else $JAUNT_DATABASE_URL, else jaunt.db here.
+    A plain file name means a SQLite file."""
+    url = arg or os.environ.get("JAUNT_DATABASE_URL") or "jaunt.db"
+    return url if "://" in url else f"sqlite:///{url}"
 
 
 def make_engine(url="sqlite:///jaunt.db"):

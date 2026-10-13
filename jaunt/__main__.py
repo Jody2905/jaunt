@@ -2,23 +2,19 @@
 
   python -m jaunt demo                 walk through the booking rules with a throwaway database
   python -m jaunt init-demo [--reset]  build the database (via migrations) and fill it with demo data
+  python -m jaunt serve [--port 8000]  run the web API; open http://127.0.0.1:8000/docs
 """
 
 import argparse
-import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import demo
+from .db import database_url
 
 DEMO_PASSWORD = "Jaunt-2026-demo"
 ROOT = Path(__file__).resolve().parent.parent
-
-
-def database_url(arg=None):
-    url = arg or os.environ.get("JAUNT_DATABASE_URL") or "jaunt.db"
-    return url if "://" in url else f"sqlite:///{url}"
 
 
 def migrate(url):
@@ -83,6 +79,24 @@ def init_demo(url, reset=False, today=None):
     return 0
 
 
+def serve(url, host, port):
+    import uvicorn
+    from sqlalchemy import inspect
+
+    from .api import create_app
+    from .db import make_engine
+
+    engine = make_engine(url)
+    if not inspect(engine).has_table("places"):
+        print("There's no Jaunt database here yet. Run:  py -m jaunt init-demo", file=sys.stderr)
+        return 1
+    engine.dispose()
+    migrate(url)                                   # pick up any new migrations
+    print(f"Jaunt is running. Open http://{host}:{port}/docs  (Ctrl+C to stop)")
+    uvicorn.run(create_app(url), host=host, port=port, log_level="warning")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="jaunt")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -90,10 +104,16 @@ def main(argv=None):
     i = sub.add_parser("init-demo", help="build the database and fill it with demo data")
     i.add_argument("--db", help="SQLite file or database URL (default: $JAUNT_DATABASE_URL or jaunt.db)")
     i.add_argument("--reset", action="store_true", help="delete existing data first")
+    v = sub.add_parser("serve", help="run the web API")
+    v.add_argument("--db", help="SQLite file or database URL")
+    v.add_argument("--host", default="127.0.0.1")
+    v.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
     if args.command == "demo":
         demo.run()
         return 0
+    if args.command == "serve":
+        return serve(database_url(args.db), args.host, args.port)
     return init_demo(database_url(args.db), args.reset)
 
 

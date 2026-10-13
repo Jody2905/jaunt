@@ -44,6 +44,18 @@ class User(Base):
     created_at: Mapped[datetime]
 
 
+class LoginSession(Base):
+    """A signed-in browser. Only a hash of the cookie token is kept (see services.start_session)."""
+    __tablename__ = "login_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+
+
 class Place(Base):
     __tablename__ = "places"
 

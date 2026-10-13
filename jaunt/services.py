@@ -16,6 +16,7 @@ Cancellation policies
     car     free any time before pick-up
 """
 
+import hashlib
 import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,8 +25,8 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func, or_, select
 
 from . import passwords
-from .models import (Booking, CarClass, Flight, ItineraryItem, Place, RoomType, Stay, Tour, TourSlot, Trip,
-                     User)
+from .models import (Booking, CarClass, Flight, ItineraryItem, LoginSession, Place, RoomType, Stay, Tour,
+                     TourSlot, Trip, User)
 from .money import fmt
 
 HOLD_MINUTES = 15
@@ -51,6 +52,10 @@ class JauntError(Exception):
 
 class NotFound(JauntError):
     pass
+
+
+class SoldOut(JauntError):
+    """Not enough left. (The API answers 409 Conflict for this one.)"""
 
 
 # ======================================================================
@@ -81,6 +86,61 @@ def authenticate(db, email, password):
     # Hash something even for unknown emails, so timing doesn't reveal which emails have accounts
     stored = user.password_hash if user else passwords.hash_password("timing-equaliser")
     return user if passwords.verify_password(password or "", stored) and user else None
+
+
+# ======================================================================
+# Login sessions
+# ======================================================================
+# The browser keeps a random token in a cookie. The database stores only a SHA-256
+# of it, so a leaked copy of the database can't be used to log in as anyone.
+# Each session also has its own CSRF token, which the page must send back as a
+# header on every change (a forged form on another website can't read it).
+
+SESSION_DAYS = 7
+
+
+def start_session(db, user, now=None):
+    """Returns (cookie token, session). The token is shown once and never stored."""
+    now = now or datetime.now()
+    token = secrets.token_urlsafe(32)
+    with _tx(db):
+        session = LoginSession(token_hash=_hash_token(token), user_id=user.id, csrf_token=secrets.token_urlsafe(32),
+                               created_at=now, expires_at=now + timedelta(days=SESSION_DAYS))
+        db.add(session)
+    return token, session
+
+
+def session_for(db, token, now=None):
+    """(user, session) for a cookie token, or None if it's unknown or has run out."""
+    if not token:
+        return None
+    now = now or datetime.now()
+    row = db.execute(select(LoginSession, User).join(User, User.id == LoginSession.user_id)
+                     .where(LoginSession.token_hash == _hash_token(token))).first()
+    if row is None or row[0].expires_at <= now:
+        db.rollback()
+        return None
+    session, user = row
+    db.expunge(session)
+    db.expunge(user)                                # keep their loaded values after the read ends
+    db.rollback()
+    return user, session
+
+
+def end_session(db, token):
+    if token:
+        with _tx(db):
+            db.execute(LoginSession.__table__.delete().where(LoginSession.token_hash == _hash_token(token)))
+
+
+def end_expired_sessions(db, now=None):
+    with _tx(db):
+        return db.execute(LoginSession.__table__.delete().where(
+            LoginSession.expires_at <= (now or datetime.now()))).rowcount
+
+
+def _hash_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 # ======================================================================
@@ -197,6 +257,7 @@ def move_item(db, user, item_id, to_day, to_position):
 
 
 def delete_item(db, user, item_id):
+    """Remove an item and close the gap. Returns the trip's id."""
     with _tx(db):
         item, trip = _own_item(db, user, item_id, lock_trip=True)
         if item.kind == "booking":
@@ -206,6 +267,7 @@ def delete_item(db, user, item_id):
         db.flush()
         for pos, i in enumerate(_day_items(db, trip.id, day)):
             i.position = pos
+    return trip.id
 
 
 def itinerary(db, user, trip_id):
@@ -347,7 +409,7 @@ def hold_stay(db, user, trip_id, room_type_id, check_in, check_out, rooms=1, now
         _quantity(rooms, 5, "rooms")
         left = _rooms_left(db, room, check_in, check_out, now)
         if left < rooms:
-            raise JauntError(_sold_out(left, "room", f"{room.stay.name} ({room.name})"))
+            raise SoldOut(_sold_out(left, "room", f"{room.stay.name} ({room.name})"))
         return _new_booking(db, trip, user, "stay", now, room_type_id=room.id,
                             title=f"{room.stay.name}, {room.name}", start_date=check_in, end_date=check_out,
                             starts_at=datetime.combine(check_in, CHECK_IN), quantity=rooms, units=nights,
@@ -365,7 +427,7 @@ def hold_flight(db, user, trip_id, flight_id, passengers=1, now=None):
             raise JauntError("That flight has already left")
         left = _seats_left(db, flight, now)
         if left < passengers:
-            raise JauntError(_sold_out(left, "seat", f"flight {flight.number}"))
+            raise SoldOut(_sold_out(left, "seat", f"flight {flight.number}"))
         return _new_booking(db, trip, user, "flight", now, flight_id=flight.id,
                             title=f"Flight {flight.number} {flight.origin.code}→{flight.destination.code}",
                             start_date=flight.departs_at.date(), end_date=flight.departs_at.date(),
@@ -383,7 +445,7 @@ def hold_tour(db, user, trip_id, slot_id, people=1, now=None):
             raise JauntError("That tour has already started")
         left = _places_left(db, slot, now)
         if left < people:
-            raise JauntError(_sold_out(left, "place", slot.tour.name))
+            raise SoldOut(_sold_out(left, "place", slot.tour.name))
         return _new_booking(db, trip, user, "tour", now, tour_slot_id=slot.id, title=slot.tour.name,
                             start_date=slot.starts_at.date(), end_date=slot.starts_at.date(),
                             starts_at=slot.starts_at, quantity=people, units=1, unit_cents=slot.tour.price_cents)
@@ -399,7 +461,7 @@ def hold_car(db, user, trip_id, car_class_id, pickup, dropoff, cars=1, now=None)
         _quantity(cars, 3, "cars")
         left = _cars_left(db, car, pickup, dropoff, now)
         if left < cars:
-            raise JauntError(_sold_out(left, "car", f"{car.company} {car.name}"))
+            raise SoldOut(_sold_out(left, "car", f"{car.company} {car.name}"))
         return _new_booking(db, trip, user, "car", now, car_class_id=car.id, title=f"{car.company} {car.name}",
                             start_date=pickup, end_date=dropoff, starts_at=datetime.combine(pickup, CAR_PICKUP),
                             quantity=cars, units=days, unit_cents=car.daily_cents)
@@ -465,6 +527,12 @@ def cancel(db, user, booking_id, now=None):
         db.execute(ItineraryItem.__table__.delete().where(ItineraryItem.booking_id == b.id))
         _renumber_trip(db, b.trip_id)
     return b, refund
+
+
+def refund_quote(db, user, booking_id, now=None):
+    """What cancelling right now would refund, without cancelling."""
+    b = _own_booking(db, user, booking_id)
+    return refund_for(b, now or datetime.now(), _stay_cancel_hours(db, b))
 
 
 def expire_holds(db, now=None):
