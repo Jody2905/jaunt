@@ -21,7 +21,7 @@ def test_demo_itinerary_reads_in_time_order():
     lines = []
     demo.run(out=lines.append)
     day = lines[lines.index("   Tue 10 Nov") + 1:lines.index("   Tue 10 Nov") + 3]
-    assert [l.split()[0] for l in day] == ["08:00", "14:00"]                  # flight before check-in
+    assert [line.split()[0] for line in day] == ["08:00", "14:00"]                  # flight before check-in
 
 
 def test_init_demo_builds_a_usable_database(tmp_path, capsys):

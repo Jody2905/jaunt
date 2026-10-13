@@ -10,7 +10,6 @@ from jaunt.services import JauntError, NotFound
 
 from .conftest import NOW, car, d, flight, room, slot
 
-
 # ---- Searching ---------------------------------------------------------------------------
 
 def test_search_stays_shows_price_and_rooms_left(db, places):
@@ -34,7 +33,8 @@ def test_search_flights_and_tours_and_cars(db, places):
 
 def test_no_sunday_catamaran(db, places):
     assert d(15).weekday() == 6
-    assert "Tobago Cays Snorkel Day" in [t.slot.tour.name for t in services.search_tours(db, places["SVD"], d(14), now=NOW)]
+    saturday = [t.slot.tour.name for t in services.search_tours(db, places["SVD"], d(14), now=NOW)]
+    assert "Tobago Cays Snorkel Day" in saturday
     names = [t.slot.tour.name for t in services.search_tours(db, places["SVD"], d(15), now=NOW)]
     assert "Tobago Cays Snorkel Day" not in names                   # 15 Nov 2026 is a Sunday
 
@@ -136,11 +136,13 @@ def test_flight_refund_window(db, jo, trip):
 
 
 def test_tour_and_car_policies(db, jo, trip):
-    sail = booked(db, jo, services.hold_tour(db, jo, trip.id, slot(db, "Sunset Sail Around Bequia", d(11)).id, 2, now=NOW))
+    sail_slot = slot(db, "Sunset Sail Around Bequia", d(11)).id
+    sail = booked(db, jo, services.hold_tour(db, jo, trip.id, sail_slot, 2, now=NOW))
     starts = datetime(2026, 11, 11, 16, 30)
     assert services.refund_for(sail, starts - timedelta(hours=25), 48).cents == sail.total_cents
     assert services.refund_for(sail, starts - timedelta(hours=2), 48).cents == 0
-    moke = booked(db, jo, services.hold_car(db, jo, trip.id, car(db, "Bequia Wheels", "Mini Moke").id, d(11), d(13), now=NOW))
+    moke_class = car(db, "Bequia Wheels", "Mini Moke").id
+    moke = booked(db, jo, services.hold_car(db, jo, trip.id, moke_class, d(11), d(13), now=NOW))
     assert services.refund_for(moke, datetime(2026, 11, 11, 8, 59), 48).cents == moke.total_cents
     with pytest.raises(JauntError, match="already started"):
         services.cancel(db, jo, moke.id, now=datetime(2026, 11, 11, 9, 0))
@@ -204,3 +206,39 @@ def test_database_checks_bookings(db, jo, trip):
         db.query(Booking).filter_by(id=b.id).update({"flight_id": 1})     # a tour booking can't also be a flight
         db.commit()
     db.rollback()
+
+
+# ---- One confirmed stay a night ------------------------------------------------------------
+
+def hold_room(db, jo, trip, stay, name, check_in, check_out):
+    return services.hold_stay(db, jo, trip.id, room(db, stay, name).id, check_in, check_out, now=NOW)
+
+
+def test_you_can_hold_several_stays_but_confirm_one_a_night(db, jo, trip):
+    inn = hold_room(db, jo, trip, "Harbour Lights Inn", "Harbour Double", d(10), d(14))
+    villa = hold_room(db, jo, trip, "Seagrape Villas", "One-bed Villa", d(12), d(16))   # overlaps 12 and 13
+    services.confirm(db, jo, inn.id, now=NOW)
+    with pytest.raises(JauntError) as refused:
+        services.confirm(db, jo, villa.id, now=NOW)
+    assert str(refused.value).startswith("You already have Harbour Lights Inn, Harbour Double confirmed "
+                                         "for the nights of Thu 12 Nov to Fri 13 Nov.")
+    assert db.get(Booking, villa.id).status == "held"                                  # still held, untouched
+    services.cancel(db, jo, inn.id, now=NOW)
+    assert services.confirm(db, jo, villa.id, now=NOW).status == "confirmed"           # free to switch
+
+
+def test_back_to_back_stays_are_fine(db, jo, trip):
+    first = hold_room(db, jo, trip, "Harbour Lights Inn", "Harbour Double", d(10), d(13))
+    second = hold_room(db, jo, trip, "Seagrape Villas", "One-bed Villa", d(13), d(16))  # check in on check-out day
+    services.confirm(db, jo, first.id, now=NOW)
+    assert services.confirm(db, jo, second.id, now=NOW).status == "confirmed"
+    clash = hold_room(db, jo, trip, "Seagrape Villas", "Two-bed Villa", d(15), d(16))
+    with pytest.raises(JauntError, match="for the night of Sun 15 Nov"):
+        services.confirm(db, jo, clash.id, now=NOW)
+
+
+def test_the_one_stay_rule_is_per_trip(db, jo, places, trip):
+    other = services.create_trip(db, jo, "Same dates, other plan", places["BQU"], d(10), d(16), now=NOW)
+    services.confirm(db, jo, hold_room(db, jo, trip, "Harbour Lights Inn", "Harbour Double", d(10), d(14)).id, now=NOW)
+    b = hold_room(db, jo, other, "Harbour Lights Inn", "Harbour Double", d(10), d(14))
+    assert services.confirm(db, jo, b.id, now=NOW).status == "confirmed"

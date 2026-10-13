@@ -145,6 +145,7 @@ class BookingOut(Out):
     total_cents: int
     refund_cents: int
     held_until: datetime
+    hold_seconds_left: int | None = Field(None, description="For holds: seconds until it lapses")
     confirmed_at: datetime | None
     cancelled_at: datetime | None
 

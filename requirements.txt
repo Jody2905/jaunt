@@ -2,3 +2,4 @@ SQLAlchemy>=2.0,<3
 alembic>=1.13,<2
 fastapi>=0.115
 uvicorn>=0.30
+psycopg[binary]>=3.2,<4      # only needed for PostgreSQL

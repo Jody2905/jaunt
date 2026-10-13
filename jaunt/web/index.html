@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jaunt: plan island days and book the trip</title>
+  <meta name="description" content="Plan a Caribbean island trip day by day, then book stays, flights, tours and car hire for it. A portfolio project with invented demo data.">
+  <meta name="theme-color" content="#8FD8E6">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/static/fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="preload" href="/static/video/hero.jpg" as="image">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+  <header class="site-header">
+    <a class="wordmark" href="#/" aria-label="Jaunt home">jaunt</a>
+    <nav id="nav" aria-label="Main"></nav>
+  </header>
+  <main id="view" tabindex="-1">
+    <noscript><p class="page">Jaunt needs JavaScript switched on.</p></noscript>
+  </main>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <dialog id="ask" class="ask" aria-labelledby="ask-title">
+    <form method="dialog">
+      <h2 id="ask-title"></h2>
+      <div id="ask-body"></div>
+      <div class="ask-actions">
+        <button class="btn quiet" value="no" id="ask-no"></button>
+        <button class="btn primary" value="yes" id="ask-yes"></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

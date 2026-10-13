@@ -7,11 +7,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from sqlalchemy import select  # noqa: E402
+
 from jaunt import services  # noqa: E402
 from jaunt.catalogue import seed_catalogue  # noqa: E402
 from jaunt.db import create_tables, make_engine, session_factory  # noqa: E402
-from jaunt.models import Base, CarClass, Flight, Place, RoomType, TourSlot  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from jaunt.models import Base, CarClass, Flight, RoomType, TourSlot  # noqa: E402
 
 PASSWORD = "correct-horse-battery"
 NOW = datetime(2026, 11, 2, 10, 0)            # "now" in every test: Monday 2 November, 10:00
@@ -27,7 +28,9 @@ def db_url(tmp_path):
     if not TEST_DATABASE_URL:
         return f"sqlite:///{tmp_path / 'test.db'}"
     engine = make_engine(TEST_DATABASE_URL)
-    Base.metadata.drop_all(engine)
+    Base.metadata.drop_all(engine)                 # start every test from an empty database
+    with engine.begin() as c:
+        c.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
     engine.dispose()
     return TEST_DATABASE_URL
 
@@ -82,15 +85,20 @@ def room(db, stay_name, room_name):
                      .where(RoomType.stay.has(name=stay_name)))
 
 
+def _day_window(day):
+    start = datetime.combine(day, datetime.min.time())
+    return start, start + timedelta(days=1)
+
+
 def flight(db, number, day):
-    return db.scalar(select(Flight).where(Flight.number == number, Flight.departs_at >= datetime.combine(day, datetime.min.time()),
-                                          Flight.departs_at < datetime.combine(day + timedelta(days=1), datetime.min.time())))
+    start, end = _day_window(day)
+    return db.scalar(select(Flight).where(Flight.number == number, Flight.departs_at >= start, Flight.departs_at < end))
 
 
 def slot(db, tour_name, day):
+    start, end = _day_window(day)
     return db.scalar(select(TourSlot).where(TourSlot.tour.has(name=tour_name),
-                                            TourSlot.starts_at >= datetime.combine(day, datetime.min.time()),
-                                            TourSlot.starts_at < datetime.combine(day + timedelta(days=1), datetime.min.time())))
+                                            TourSlot.starts_at >= start, TourSlot.starts_at < end))
 
 
 def car(db, company, name):

@@ -15,11 +15,11 @@ from sqlalchemy import select
 from . import services
 from .catalogue import seed_catalogue
 from .db import create_tables, make_engine, session_factory
-from .models import CarClass, Flight, RoomType, Stay, TourSlot, Tour
+from .models import CarClass, Flight, RoomType, Tour, TourSlot
 from .money import fmt
 from .services import JauntError
 
-PASSWORD = "Demo-password-2026"
+PASSWORD = "Demo-password-2026"  # noqa: S105 - throwaway demo account
 T0 = datetime(2026, 11, 2, 10, 0)
 
 
@@ -56,7 +56,8 @@ def _walkthrough(db, out):
     step("Jo plans a trip (Mon 2 Nov, 10:00)")
     trip = services.create_trip(db, jo, "Bequia birthday week", bqu, date(2026, 11, 10), date(2026, 11, 14),
                                 travellers=2, budget_cents=200000, now=T0)
-    out(f"   \"{trip.title}\": {trip.place.name}, 10-14 Nov, {trip.travellers} travellers, budget {fmt(trip.budget_cents)}")
+    out(f"   \"{trip.title}\": {trip.place.name}, 10-14 Nov, {trip.travellers} travellers, "
+        f"budget {fmt(trip.budget_cents)}")
 
     step("Searching stays for 10-14 Nov")
     for o in services.search_stays(db, bqu, date(2026, 11, 10), date(2026, 11, 14), now=T0):

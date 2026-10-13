@@ -245,12 +245,15 @@ def test_the_whole_booking_flow(jo_client, trip_id, db, clock):
     assert hold.status_code == 201, hold.text
     b = hold.json()
     assert (b["status"], b["total_cents"], b["held_until"]) == ("held", 44000, "2026-11-02T10:15:00")
+    assert b["hold_seconds_left"] == 15 * 60
     assert b["reference"].startswith("JNT-")
     t = jo_client.get(f"/api/trips/{trip_id}").json()
     assert t["budget"]["on_hold_cents"] == 44000 and t["itinerary"][0]["items"] == []
 
     clock.advance(minutes=5)
+    assert jo_client.get(f"/api/trips/{trip_id}").json()["bookings"][0]["hold_seconds_left"] == 600
     confirmed = jo_client.post(f"/api/bookings/{b['id']}/confirm").json()
+    assert confirmed["hold_seconds_left"] is None
     assert confirmed["status"] == "confirmed"
     t = jo_client.get(f"/api/trips/{trip_id}").json()
     assert t["budget"]["committed_cents"] == 44000 and t["budget"]["on_hold_cents"] == 0
@@ -322,5 +325,4 @@ def test_docs_and_openapi(client):
     assert {"/api/auth/login", "/api/trips/{trip_id}", "/api/trips/{trip_id}/holds/stay",
             "/api/bookings/{booking_id}/cancel"} <= set(spec["paths"])
     assert {"X-CSRF-Token", COOKIE} <= {v["name"] for v in spec["components"]["securitySchemes"].values()}
-    r = client.get("/", follow_redirects=False)
-    assert r.status_code == 307 and r.headers["location"] == "/docs"
+    assert "content-security-policy" not in client.get("/docs").headers      # Swagger UI uses a CDN

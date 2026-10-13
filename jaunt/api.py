@@ -1,7 +1,7 @@
 """Jaunt's web API (FastAPI). Every rule lives in services.py; this file only
 translates HTTP to service calls and back.
 
-    py -m jaunt serve            then open http://127.0.0.1:8000/docs
+    py -m jaunt serve            then open http://127.0.0.1:8000/ (the app) or /docs (the API)
 
 Security
   * Logging in sets an HttpOnly, SameSite=Lax cookie holding a random session token.
@@ -13,16 +13,19 @@ Security
   * Someone else's trip or booking answers 404, exactly as if it didn't exist.
 """
 
+import mimetypes
 import secrets
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, Security
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyCookie, APIKeyHeader
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from . import schemas as s
@@ -32,6 +35,18 @@ from .models import LoginSession, Place, User
 from .services import JauntError, NotFound, SoldOut
 
 COOKIE = "jaunt_session"
+WEB = Path(__file__).resolve().parent / "web"
+
+# The app's own pages may only load files from this server: no inline scripts, no outside code.
+# The /docs page is left out: it loads Swagger UI from a CDN.
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; "
+       "img-src 'self' data:; media-src 'self'; connect-src 'self'; "
+       "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+
+# Some Windows setups label .js files as text/plain, which browsers refuse to run as modules
+for kind, ext in (("text/javascript", ".js"), ("text/css", ".css"), ("video/mp4", ".mp4"), ("font/woff2", ".woff2"),
+                  ("video/webm", ".webm"), ("image/svg+xml", ".svg")):
+    mimetypes.add_type(kind, ext)
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 DESCRIPTION = """
@@ -128,8 +143,12 @@ class LoginThrottle:
 
 def booking_out(b, now):
     out = s.BookingOut.model_validate(b)
-    if b.status == "held" and b.held_until <= now:
-        out.status = "expired"                       # lapsed holds read as expired straight away
+    if b.status == "held":
+        left = int((b.held_until - now).total_seconds())
+        if left > 0:
+            out.hold_seconds_left = left
+        else:
+            out.status = "expired"                   # lapsed holds read as expired straight away
     return out
 
 
@@ -139,7 +158,8 @@ def trip_detail(db, user, trip_id, now):
     b = services.budget(db, user, trip.id, now=now)
     return s.TripDetailOut(
         **s.TripOut.model_validate(trip).model_dump(),
-        itinerary=[s.DayOut(date=day, items=[s.ItemOut.model_validate(i) for i in items]) for day, items in days.items()],
+        itinerary=[s.DayOut(date=day, items=[s.ItemOut.model_validate(i) for i in items])
+                   for day, items in days.items()],
         budget=s.BudgetOut(budget_cents=b.budget_cents, committed_cents=b.committed_cents,
                            on_hold_cents=b.on_hold_cents, remaining_cents=b.remaining_cents,
                            over_budget=b.over_budget),
@@ -193,6 +213,7 @@ def login(body: s.LoginIn, request: Request, response: Response, db=Depends(get_
         throttle.failed(email, now)
         raise HTTPException(401, "Wrong email or password")          # same message either way
     throttle.succeeded(email)
+    services.end_expired_sessions(db, now)                            # housekeeping
     services.end_session(db, old_token)                               # a fresh session on every login
     token, session = services.start_session(db, user, now=now)
     set_session_cookie(request, response, token)
@@ -398,7 +419,7 @@ def cancel(booking_id: int, auth: Auth = Depends(signed_in), db=Depends(get_db),
 
 def create_app(url=None, engine=None, clock=None, secure_cookies=False):
     """`clock` lets tests choose what time it is. Pass secure_cookies=True when served over HTTPS."""
-    app = FastAPI(title="Jaunt", version="0.2.0", description=DESCRIPTION, openapi_tags=TAGS)
+    app = FastAPI(title="Jaunt", version="1.0.0", description=DESCRIPTION, openapi_tags=TAGS)
     app.state.Session = session_factory(engine or make_engine(url or database_url()))
     app.state.clock = clock or datetime.now
     app.state.secure_cookies = secure_cookies
@@ -425,12 +446,18 @@ def create_app(url=None, engine=None, clock=None, secure_cookies=False):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
-        if request.url.path.startswith("/api/"):
+        path = request.url.path
+        if path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        if not (path.startswith("/docs") or path.startswith("/redoc")):
+            response.headers["Content-Security-Policy"] = CSP
         return response
+
+    app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
 
     @app.get("/", include_in_schema=False)
     def home():
-        return RedirectResponse("/docs")          # the app's own pages arrive in Phase 3
+        """The whole front end is one page; it moves between screens itself (#/trips, #/trips/1...)."""
+        return FileResponse(WEB / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app

@@ -20,13 +20,25 @@ import hashlib
 import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, time, timedelta
 
 from sqlalchemy import func, or_, select
 
 from . import passwords
-from .models import (Booking, CarClass, Flight, ItineraryItem, LoginSession, Place, RoomType, Stay, Tour,
-                     TourSlot, Trip, User)
+from .models import (
+    Booking,
+    CarClass,
+    Flight,
+    ItineraryItem,
+    LoginSession,
+    Place,
+    RoomType,
+    Stay,
+    Tour,
+    TourSlot,
+    Trip,
+    User,
+)
 from .money import fmt
 
 HOLD_MINUTES = 15
@@ -468,7 +480,12 @@ def hold_car(db, user, trip_id, car_class_id, pickup, dropoff, cars=1, now=None)
 
 
 def confirm(db, user, booking_id, now=None):
-    """Confirm a hold. (In a real system this is where payment would be taken.)"""
+    """Confirm a hold. (In a real system this is where payment would be taken.)
+
+    A trip can hold several places to stay for the same nights while the traveller
+    compares them, but only one can be confirmed for any night. (A group that needs
+    two rooms books "2 rooms" in one booking.)
+    """
     now = now or datetime.now()
     with _tx(db):
         b = _own_booking(db, user, booking_id, lock=True)
@@ -478,11 +495,26 @@ def confirm(db, user, booking_id, now=None):
         elif b.status != "held":
             raise JauntError(f"This booking is {b.status}, so it can't be confirmed")
         else:
+            if b.kind == "stay":
+                _one_stay_a_night(db, user, b)
             b.status, b.confirmed_at = "confirmed", now
             _add_booking_to_plan(db, b)
     if lapsed:
         raise JauntError("This hold has expired, so the space was released. Please search again.")
     return b
+
+
+def _one_stay_a_night(db, user, b):
+    _own_trip(db, user, b.trip_id, lock=True)     # one confirmation at a time per trip, so two can't race
+    clash = db.scalar(select(Booking).where(
+        Booking.trip_id == b.trip_id, Booking.kind == "stay", Booking.status == "confirmed", Booking.id != b.id,
+        Booking.start_date < b.end_date, Booking.end_date > b.start_date).order_by(Booking.start_date))
+    if clash:
+        first, last = max(b.start_date, clash.start_date), min(b.end_date, clash.end_date) - timedelta(days=1)
+        nights = (f"the night of {first:%a %d %b}" if first == last
+                  else f"the nights of {first:%a %d %b} to {last:%a %d %b}")
+        raise JauntError(f"You already have {clash.title} confirmed for {nights}. A trip can have one confirmed "
+                         f"stay a night: cancel that one first, or book extra rooms in a single booking.")
 
 
 @dataclass

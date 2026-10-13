@@ -2,7 +2,7 @@
 
   python -m jaunt demo                 walk through the booking rules with a throwaway database
   python -m jaunt init-demo [--reset]  build the database (via migrations) and fill it with demo data
-  python -m jaunt serve [--port 8000]  run the web API; open http://127.0.0.1:8000/docs
+  python -m jaunt serve [--port 8000]  run the app; open http://127.0.0.1:8000/
 """
 
 import argparse
@@ -92,7 +92,7 @@ def serve(url, host, port):
         return 1
     engine.dispose()
     migrate(url)                                   # pick up any new migrations
-    print(f"Jaunt is running. Open http://{host}:{port}/docs  (Ctrl+C to stop)")
+    print(f"Jaunt is running. Open http://{host}:{port}/  (API docs at /docs; Ctrl+C to stop)")
     uvicorn.run(create_app(url), host=host, port=port, log_level="warning")
     return 0
 

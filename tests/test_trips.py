@@ -7,7 +7,6 @@ from jaunt.services import JauntError, NotFound
 
 from .conftest import NOW, PASSWORD, d
 
-
 # ---- Accounts ----------------------------------------------------------------------------
 
 def test_accounts(db):
